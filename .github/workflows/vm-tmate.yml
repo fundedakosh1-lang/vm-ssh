@@ -28,12 +28,14 @@ jobs:
           TMATE_DURATION_MIN: ${{ github.event.inputs.duration_min }}
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq tmate jq >/dev/null
-          # plain tmate prints "ssh ..." and "web ..." to stdout; keep it in tmux
-          setsid tmux new-session -d -s tmate 'tmate > /tmp/tmate.log 2>&1' >/dev/null 2>&1 < /dev/null &
-          sleep 5
-          WEB="$(grep -oE 'https://[^ ]+' /tmp/tmate.log | head -1)"
-          SSH_CMD="$(grep -oE 'ssh [^ ]+@[^ ]+' /tmp/tmate.log | head -1)"
-          echo "WEB=$WEB"; echo "SSH_CMD=$SSH_CMD"; echo "--- log ---"; cat /tmp/tmate.log
+          # Run tmate in a default-socket tmux session; it prints web+ssh to the pane.
+          tmux new-session -d -s tmate 'tmate -F'
+          sleep 6
+          PANE="$(tmux capture-pane -pt tmate -S -40 2>/dev/null || true)"
+          echo "--- pane ---"; echo "$PANE"
+          WEB="$(echo "$PANE" | grep -oE 'https://[^ ]+' | head -1)"
+          SSH_CMD="$(echo "$PANE" | grep -oE 'ssh [^ ]+@[^ ]+' | head -1)"
+          echo "WEB=$WEB"; echo "SSH_CMD=$SSH_CMD"
           BODY=$(printf 'VM is up.\n\nWeb: %s\n\nSSH: `%s`\n\nAlive ~%s min.' "${WEB:-see logs}" "${SSH_CMD:-see logs}" "$TMATE_DURATION_MIN")
           curl -sS -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
