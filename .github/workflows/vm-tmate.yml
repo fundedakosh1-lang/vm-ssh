@@ -16,13 +16,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Install my SSH public key (for tmate sessions)
+      - name: Install my SSH public key
         run: |
           mkdir -p ~/.ssh
           echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP1kucUA5yZcGi8ipuXgyokpivgHc62T/pdmd4jr/oal modal-sandbox" >> ~/.ssh/authorized_keys
           chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
 
-      - name: Keep VM alive while tmate holds the step
-        uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: true
+      - name: Start tmate and publish access details
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          TMATE_DURATION_MIN: ${{ github.event.inputs.duration_min }}
+        run: |
+          # tmate in tmux; capture its web + ssh lines from the pane
+          sudo apt-get update -qq && sudo apt-get install -y -qq tmate jq >/dev/null
+          TMATE_SOCK=/tmp/tmate.sock
+          setsid tmux -S "$TMATE_SOCK" new-session -d -s tmate \
+            'tmate -F' >/dev/null 2>&1 < /dev/null &
+          sleep 4
+          # tmate prints the connection info on stderr/stdout of the process;
+          # fetch via tmate's own socket info if available
+          SOCK_OUT="$(tmux -S "$TMATE_SOCK" capture-pane -pt tmate -S -40 2>/dev/null || true)"
+          WEB="$(echo "$SOCK_OUT" | grep -oE 'https://[^ ]+' | head -1)"
+          SSH_CMD="$(echo "$SOCK_OUT" | grep -oE 'ssh [^ ]+@[^ ]+' | head -1)"
+          echo "WEB=$WEB"
+          echo "SSH_CMD=$SSH_CMD"
+          BODY=$(printf 'VM is up.\n\nWeb: %s\n\nSSH: `%s`\n\nThis run stays alive ~%s min.' "${WEB:-see logs}" "${SSH_CMD:-see logs}" "$TMATE_DURATION_MIN")
+          curl -sS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/fundedakosh1-lang/vm-ssh/issues/1/comments \
+            -d "$(jq -n --arg b "$BODY" '{body:$b}')" >/dev/null
+          echo "published"
+
+      - name: Keep VM alive
+        env:
+          DURATION_MIN: ${{ github.event.inputs.duration_min }}
+        run: |
+          deadline=$(( $(date +%s) + ${DURATION_MIN} * 60 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do sleep 30; done
