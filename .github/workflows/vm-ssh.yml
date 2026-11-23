@@ -45,11 +45,12 @@ jobs:
           nohup cloudflared tunnel --url tcp://localhost:2222 --no-autoupdate >/tmp/cf.log 2>&1 &
           sleep 10
           HOST="$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)"
-          PORT="$(grep -oE 'tcp://[a-z0-9.-]+:[0-9]+' /tmp/cf.log | grep -oE '[0-9]+$' | head -1)"
+          # Quick TCP tunnels expose SSH on port 443.
+          PORT="443"
           echo "host=$HOST" >> "$GITHUB_OUTPUT"
-          echo "port=${PORT:-443}" >> "$GITHUB_OUTPUT"
+          echo "port=$PORT" >> "$GITHUB_OUTPUT"
           echo "CLOUDFLARED_HOST=${HOST:-none}"
-          echo "CLOUDFLARED_PORT=${PORT:-443}"
+          echo "CLOUDFLARED_PORT=$PORT"
           if [ -z "$HOST" ]; then
             echo "--- cloudflared log ---"; tail -25 /tmp/cf.log
             exit 1
@@ -58,14 +59,14 @@ jobs:
 
       - name: Publish tunnel address as issue comment
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           HOST="${{ steps.cf.outputs.host }}"
           PORT="${{ steps.cf.outputs.port }}"
           [ -z "$HOST" ] && HOST="none"
           BODY=$(printf 'VM is up.\n\n```\nssh -p %s runner@%s\n```\n\nExpires when this run ends.' "${PORT:-443}" "$HOST")
           echo "BODY=$BODY"
-          gh issue comment 1 --repo fundedakosh1-lang/vm-ssh --body "$BODY"
+          gh issue comment 1 --repo fundedakosh1-lang/vm-ssh --body "$BODY" || { echo "gh comment failed; raw api:"; curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" https://api.github.com/repos/fundedakosh1-lang/vm-ssh/issues/1/comments -d "{\"body\":\"$BODY\"}"; }
           echo "comment exit=$?"
 
       - name: Keep VM alive
