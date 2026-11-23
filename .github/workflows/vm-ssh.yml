@@ -57,15 +57,16 @@ jobs:
           echo "TUNNEL_READY ${HOST}:${PORT:-443}"
 
       - name: Publish tunnel address as issue comment
-        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           HOST="${{ steps.cf.outputs.host }}"
           PORT="${{ steps.cf.outputs.port }}"
           [ -z "$HOST" ] && HOST="none"
-          BODY="$(printf 'VM is up.\n\nssh -p %s -i ~/.ssh/id_ed25519 runner@%s\n\nExpires when this run ends.' "${PORT:-443}" "$HOST")"
-          gh issue comment 1 --body "$BODY" || echo "comment failed (no issue #1?)"
+          BODY=$(printf 'VM is up.\n\n```\nssh -p %s runner@%s\n```\n\nExpires when this run ends.' "${PORT:-443}" "$HOST")
+          echo "BODY=$BODY"
+          gh issue comment 1 --repo fundedakosh1-lang/vm-ssh --body "$BODY"
+          echo "comment exit=$?"
 
       - name: Keep VM alive
         env:
