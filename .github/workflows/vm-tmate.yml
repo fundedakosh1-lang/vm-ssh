@@ -1,0 +1,28 @@
+name: vm-tmate
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_min:
+        description: "Minutes before auto-kill"
+        required: false
+        default: "90"
+
+permissions:
+  contents: read
+
+jobs:
+  vm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Install my SSH public key (for tmate sessions)
+        run: |
+          mkdir -p ~/.ssh
+          echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP1kucUA5yZcGi8ipuXgyokpivgHc62T/pdmd4jr/oal modal-sandbox" >> ~/.ssh/authorized_keys
+          chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+
+      - name: Keep VM alive while tmate holds the step
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
