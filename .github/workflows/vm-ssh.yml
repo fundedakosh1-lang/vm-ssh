@@ -43,11 +43,18 @@ jobs:
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i /tmp/cloudflared.deb || sudo apt-get install -f -y -qq
           nohup cloudflared tunnel --url tcp://localhost:2222 --no-autoupdate >/tmp/cf.log 2>&1 &
-          sleep 8
-          URL="$(grep -oE 'trycloudflare\.com:[0-9]+' /tmp/cf.log | head -1)"
-          echo "tunnel=$URL" >> "$GITHUB_OUTPUT"
-          echo "CLOUDFLARED_TCP=${URL:-none}"
-          [ -n "$URL" ] || { echo "--- cloudflared log ---"; tail -20 /tmp/cf.log; exit 1; }
+          sleep 10
+          HOST="$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)"
+          PORT="$(grep -oE 'tcp://[a-z0-9.-]+:[0-9]+' /tmp/cf.log | grep -oE '[0-9]+$' | head -1)"
+          echo "host=$HOST" >> "$GITHUB_OUTPUT"
+          echo "port=${PORT:-443}" >> "$GITHUB_OUTPUT"
+          echo "CLOUDFLARED_HOST=${HOST:-none}"
+          echo "CLOUDFLARED_PORT=${PORT:-443}"
+          if [ -z "$HOST" ]; then
+            echo "--- cloudflared log ---"; tail -25 /tmp/cf.log
+            exit 1
+          fi
+          echo "TUNNEL_READY ${HOST}:${PORT:-443}"
 
       - name: Keep VM alive
         env:
