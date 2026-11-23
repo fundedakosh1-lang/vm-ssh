@@ -39,12 +39,15 @@ jobs:
       - name: Open Cloudflare TCP tunnel
         id: cf
         run: |
-          sudo apt-get install -y -qq cloudflared
+          curl -fsSL -o /tmp/cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i /tmp/cloudflared.deb || sudo apt-get install -f -y -qq
           nohup cloudflared tunnel --url tcp://localhost:2222 --no-autoupdate >/tmp/cf.log 2>&1 &
           sleep 8
           URL="$(grep -oE 'trycloudflare\.com:[0-9]+' /tmp/cf.log | head -1)"
           echo "tunnel=$URL" >> "$GITHUB_OUTPUT"
           echo "CLOUDFLARED_TCP=${URL:-none}"
+          [ -n "$URL" ] || { echo "--- cloudflared log ---"; tail -20 /tmp/cf.log; exit 1; }
 
       - name: Keep VM alive
         env:
