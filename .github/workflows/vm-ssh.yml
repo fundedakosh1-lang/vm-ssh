@@ -6,11 +6,7 @@ on:
       duration_min:
         description: "Minutes before auto-kill"
         required: false
-        default: "60"
-      idle:
-        description: "Idle grace (seconds) before kill"
-        required: false
-        default: "300"
+        default: "90"
 
 permissions:
   contents: read
@@ -18,7 +14,7 @@ permissions:
 jobs:
   vm:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Install my SSH public key
         run: |
@@ -26,53 +22,37 @@ jobs:
           echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP1kucUA5yZcGi8ipuXgyokpivgHc62T/pdmd4jr/oal modal-sandbox" >> ~/.ssh/authorized_keys
           chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
 
-      - name: Install and start dropbear SSH on 2222
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq dropbear
-          sudo mkdir -p /run/sshd
-          sudo dropbear -p 2222 -F -E &
-          sleep 2
-          pgrep -a dropbear || { echo "dropbear failed"; exit 1; }
-          echo "SSH_READY"
-
-      - name: Open Cloudflare TCP tunnel
-        id: cf
-        run: |
-          curl -fsSL -o /tmp/cloudflared.deb \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i /tmp/cloudflared.deb || sudo apt-get install -f -y -qq
-          nohup cloudflared tunnel --url tcp://localhost:2222 --no-autoupdate >/tmp/cf.log 2>&1 &
-          sleep 10
-          HOST="$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)"
-          # Quick TCP tunnels expose SSH on port 443.
-          PORT="443"
-          echo "host=$HOST" >> "$GITHUB_OUTPUT"
-          echo "port=$PORT" >> "$GITHUB_OUTPUT"
-          echo "CLOUDFLARED_HOST=${HOST:-none}"
-          echo "CLOUDFLARED_PORT=$PORT"
-          if [ -z "$HOST" ]; then
-            echo "--- cloudflared log ---"; tail -25 /tmp/cf.log
-            exit 1
-          fi
-          echo "TUNNEL_READY ${HOST}:${PORT:-443}"
-
-      - name: Publish tunnel address as issue comment
+      - name: Start dropbear SSH and expose it via localhost.run
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          DURATION_MIN: ${{ github.event.inputs.duration_min }}
         run: |
-          HOST="${{ steps.cf.outputs.host }}"
-          PORT="${{ steps.cf.outputs.port }}"
-          [ -z "$HOST" ] && HOST="none"
-          BODY=$(printf 'VM is up.\n\n```\nssh -p %s runner@%s\n```\n\nExpires when this run ends.' "${PORT:-443}" "$HOST")
-          echo "BODY=$BODY"
-          gh issue comment 1 --repo fundedakosh1-lang/vm-ssh --body "$BODY" || { echo "gh comment failed; raw api:"; curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" https://api.github.com/repos/fundedakosh1-lang/vm-ssh/issues/1/comments -d "{\"body\":\"$BODY\"}"; }
-          echo "comment exit=$?"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dropbear jq >/dev/null
+          sudo mkdir -p /run/sshd
+          sudo dropbear -p 2222 -F -E >/tmp/dropbear.log 2>&1 &
+          sleep 2
+          pgrep -a dropbear || { echo "dropbear failed"; cat /tmp/dropbear.log; exit 1; }
+
+          # Reverse tunnel: the remote side forwards a public port back to local 2222
+          setsid ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
+            -R 80:localhost:2222 nokey@localhost.run > /tmp/lhrun.log 2>&1 < /dev/null &
+          sleep 8
+
+          ADDR="$(grep -oE 'ssh -p [0-9]+ root@[a-z0-9.-]+\.localhost\.run' /tmp/lhrun.log | head -1)"
+          echo "ADDR=$ADDR"
+          BODY=$(printf 'VM is up.\n\nSSH: `%s`\n\nAlive ~%s min.' "${ADDR:-see logs}" "$DURATION_MIN")
+          curl -sS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/fundedakosh1-lang/vm-ssh/issues/1/comments \
+            -d "$(jq -n --arg b "$BODY" '{body:$b}')" >/dev/null
+          echo "published"
 
       - name: Keep VM alive
         env:
           DURATION_MIN: ${{ github.event.inputs.duration_min }}
-          IDLE: ${{ github.event.inputs.idle }}
         run: |
           deadline=$(( $(date +%s) + ${DURATION_MIN} * 60 ))
           while [ "$(date +%s)" -lt "$deadline" ]; do sleep 30; done
