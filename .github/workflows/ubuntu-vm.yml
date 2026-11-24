@@ -16,37 +16,63 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Install my SSH public key
-        run: |
-          mkdir -p ~/.ssh
-          echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP1kucUA5yZcGi8ipuXgyokpivgHc62T/pdmd4jr/oal modal-sandbox" >> ~/.ssh/authorized_keys
-          chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
-
-      - name: Start dropbear SSH and expose it via localhost.run
+      - name: Set up SSH access (key + sshd on loopback)
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           DURATION_MIN: ${{ github.event.inputs.duration_min }}
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq dropbear jq >/dev/null
+          set -euo pipefail
+
+          mkdir -p ~/.ssh
+          echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP1kucUA5yZcGi8ipuXgyokpivgHc62T/pdmd4jr/oal modal-sandbox" >> ~/.ssh/authorized_keys
+          chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+
           sudo mkdir -p /run/sshd
-          sudo dropbear -p 2222 -F -E >/tmp/dropbear.log 2>&1 &
+          sudo ssh-keygen -A >/dev/null 2>&1 || true
+          sudo /usr/sbin/sshd -p 2222 -o ListenAddress=127.0.0.1 \
+            -o PermitRootLogin=yes -o PasswordAuthentication=no \
+            >/tmp/sshd.log 2>&1
           sleep 2
-          pgrep -a dropbear || { echo "dropbear failed"; cat /tmp/dropbear.log; exit 1; }
 
-          setsid ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
-            -R 80:localhost:2222 nokey@localhost.run > /tmp/lhrun.log 2>&1 < /dev/null &
-          sleep 10
+          python3 - <<'PY'
+          import socket, sys
+          try:
+              s = socket.create_connection(("127.0.0.1", 2222), timeout=5)
+          except OSError:
+              sys.exit(1)
+          b = s.recv(64); s.close()
+          if not b.startswith(b"SSH-"):
+              sys.exit(1)
+          PY
+          echo "sshd is serving SSH on 127.0.0.1:2222"
 
-          ADDR="$(grep -oE 'ssh -p [0-9]+ root@[a-z0-9.-]+\.localhost\.run' /tmp/lhrun.log | head -1)"
-          echo "ADDR=$ADDR"
-          BODY=$(printf 'Ubuntu VM is up.\n\nSSH: `%s`\n\nAlive ~%s min.' "${ADDR:-see logs}" "$DURATION_MIN")
+          # bore proxies raw TCP; Cloudflare/localhost.run only terminate HTTP(S).
+          BORE_DIR="$HOME/.bore"
+          mkdir -p "$BORE_DIR"
+          curl -fsSL --retry 3 -o /tmp/bore.tgz \
+            "https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/bore.tgz -C "$BORE_DIR" bore
+          chmod +x "$BORE_DIR/bore"
+
+          setsid "$BORE_DIR/bore" local 2222 --to bore.pub \
+            >"$HOME/bore.log" 2>&1 < /dev/null &
+          PORT=""
+          for _ in $(seq 1 40); do
+            PORT="$(sed 's/\x1b\[[0-9;]*m//g' "$HOME/bore.log" | grep -oE 'bore\.pub:[0-9]+' | grep -oE '[0-9]+$' | tail -1 || true)"
+            [ -n "$PORT" ] && break
+            sleep 2
+          done
+          if [ -z "$PORT" ]; then
+            echo "bore did not report a public port"; cat "$HOME/bore.log"; exit 1
+          fi
+          echo "SSH_ENDPOINT=$PORT"
+
+          BODY=$(printf 'Ubuntu VM is up.\n\nSSH: `ssh -p %s runner@bore.pub`\n\nAlive ~%s min.' "$PORT" "$DURATION_MIN")
           curl -sS -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/fundedakosh1-lang/vm-ssh/issues/1/comments \
-            -d "$(jq -n --arg b "$BODY" '{body:$b}')" >/dev/null
+            -d "$(python3 -c 'import json,sys; print(json.dumps({"body": sys.argv[1]}))' "$BODY")" >/dev/null
           echo "published"
 
       - name: Keep VM alive
